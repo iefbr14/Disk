@@ -1,0 +1,9 @@
+# list of devices to look at
+# in defined dynamic filesystem to look at
+in	/sys/block
+
+skip	md*
+skip	ram*
+
+seek	hd*
+seek	sd*

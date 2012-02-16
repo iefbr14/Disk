@@ -1,0 +1,10 @@
+#! /bin/bash
+hal-find-by-property --key volume.fsusage --string filesystem |
+while read udi ; do
+    # ignore optical discs
+    if [[ "$(hal-get-property --udi $udi --key volume.is_disc)" == "false" ]]; then
+        dev=$(hal-get-property --udi $udi --key block.device)   
+        fs=$(hal-get-property --udi $udi --key volume.fstype) 
+        echo $dev": "$fs
+    fi 
+done
