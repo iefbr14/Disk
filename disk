@@ -37,10 +37,8 @@ use warnings;
 use Getopt::Std;
 
 my($Id) = 0;
-my($Dev) = 'hdc';
 
 system("git pull");
-load_did();
 
 sub usage {
 	die <<"EOF";
@@ -71,7 +69,7 @@ my($Ask)   = $Opt{a};
 my($Query) = $Opt{q};
 my($Qlist) = $Opt{l};
 
-my($Host);
+my($Host) = hostname();
 
 load_drives();
 
@@ -79,20 +77,16 @@ if ($Query) {
 	my($ser, $id);
 
 	for my $disk (query_drives()) {
-#		learn_drive($disk);
-		$ser = get_drive_id($disk);
+		$ser = get_drive_ser($disk);
 		$id = $Serials{$ser};
 		if ($id) {
 			print "$disk $id: $ser\n";
 			next;
 		}
+		
 		print "Process... $disk\n";
 		if ($Qlist) {
-			save_did();
-			$Dev = $disk;
-			learn_drive($Id, $Dev);
-			process_drive($Dev);
-			$Id    = sprintf("%04d", $Id + 1);
+			process_drive($disk);
 		}
 	}
 	exit 1;
@@ -100,11 +94,13 @@ if ($Query) {
 
 if ($Ask) {
 	local($|) = 1;
-	print "Drive: ";
-	$Dev = <STDIN>;
+	my($dev);
 
-	chomp $Dev;
-	learn_drive($Dev);
+	print "Drive: ";
+	
+	$dev = <STDIN>;
+	chomp $dev;
+	process_drive($dev);
 
 	exit 1;
 }
@@ -112,26 +108,19 @@ if ($Ask) {
 if (@ARGV == 0) {
 	usage();
 }
-$Dev = $ARGV[0];
-$Dev =~ s=/dev/==;
 
-if (defined $Opt{i}) {
-	$Id    = sprintf("%04d", $Opt{i});
-} else {
-	save_did();
-}
-learn_drive($Id, $Dev);
-
-process_drive($Dev);
+process_drive($ARGV[0]);
 
 sub learn_drive {
 	my($id, $dev) = @_;
 
-	my($ser) = get_drive_id($dev);
+	my($ser) = get_drive_ser($dev);
 
 	open(my $fd, ">> Drive.txt");
 	print {$fd} "$id $ser\n";
 	close($fd);
+
+	system("sort -o Drive.txt Drive.txt");
 
 	learn_host($id, $dev);
 }
@@ -147,7 +136,7 @@ sub learn_host {
 	close($fd);
 }
 
-sub get_drive_id {
+sub get_drive_ser {
 	my($drv) = @_;
 
 	my($mid, $sid) = ('-', '-');
@@ -156,12 +145,12 @@ sub get_drive_id {
 	while (<$fd>) {
 		if (m/Device Model:\s+(.*)/) {
 			$mid = $1;
-			$mid =~ s/ /-/g;
+			$mid =~ s/\s+/-/g;	# 1 or more whitespace
 			next;
 		}
 		if (m/Serial Number:\s+(.*)/) {
 			$sid = $1;
-			$sid =~ s/ /-/g;
+			$sid =~ s/\s+/-/g;
 			next;
 		}
 	}
@@ -177,27 +166,45 @@ sub get_drive_id {
 
 sub process_drive {
 	my($drv) = @_;
+	$drv =~ s=/dev/==;
+
+	my($ser) = get_drive_ser($drv);
+
+	if (defined $Serials{$ser}) {
+		$Id = $Serials{$ser};
+		print "$drv $Id: $ser\n";
+		learn_host($Id, $drv);
+	} elsif (defined $Opt{i}) {
+		$Id  = sprintf("%04d", $Opt{i});
+		learn_drive($Id, $drv);
+	} else {
+		$Id = next_did();
+		learn_drive($Id, $drv);
+	}
 
 	print "# >>>>>>>>>> Drive id: $Id <<<<<<<<<<\n";
-	enable_smart();
-	smartinfo();
-	smarttest() if $Test;
+	enable_smart($drv);
+	smartinfo($drv);
+	smarttest($drv) if $Test;
+	system("git add . ; git commit -m'Drive $Host $drv $Id' ; git push");
+
 	print "# >>>>>>>>>> Drive id: $Id <<<<<<<<<<\n";
 }
 
-sub load_did {
+sub next_did {
 	my($line);
 
-	open(D, "< Did.txt") or die "Can't open Did.txt ($!)\n";
-	$line = <D>;
-	if (defined $line) {
-		chomp $line;
-		$Id    = sprintf("%04d", $line + 1);
-	} else {
-		print "No data in Did.txt setting drive next drive to 1\n";
-		$Id = '0001';
+	my($last, $id, $rest) = 0;
+
+	open(D, "< Drive.txt") or die "Can't open Drive.txt ($!)\n";
+	while (<D>) {
+		chomp;
+		($id, $rest) = split(' ', $_, 2);
+		$last = $id if $id > $last;
 	}
 	close(D);
+
+	return sprintf("%04d", $last + 1);
 }
 
 sub load_drives {
@@ -216,18 +223,16 @@ sub load_drives {
 	close(D);
 }
 
-sub save_did {
-	open(D, "> Did.txt") or die "Can't create Did.txt ($!)\n";
-	print D "$Id\n";
-	close(D);
-}
-
 sub enable_smart {
-	run('enable', "smartctl -s on /dev/$Dev");
+	my($dev) = @_;
+
+	run('enable', "smartctl -s on /dev/$dev");
 }
 
 sub smartinfo {
-	run('check', "smartctl --info --health --capabilities --attributes /dev/$Dev > Info/$Id.info");
+	my($dev) = @_;
+
+	run('check', "smartctl --info --health --capabilities --attributes /dev/$dev > Info/$Id.info");
 }
 
 sub run {
@@ -271,7 +276,9 @@ sub run {
 }
 
 sub smarttest {
-	run('test', "smartctl -t offline /dev/$Dev");
+	my($dev) = @_;
+
+	run('test', "smartctl -t offline /dev/$dev");
 }
 
 #==============================================================================
@@ -312,5 +319,4 @@ sub hostname {
 }
 
 END {
-	system("git add . ; git commit -m'Drive $Dev $Id' ; git push");
 }
